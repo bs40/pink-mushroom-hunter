@@ -41,24 +41,22 @@
   #btnFire.on{background:rgba(255,95,162,.3)}
 
   #btnMove{flex:1 1 auto;max-width:214px;height:94px;border-radius:47px;
-    justify-content:space-between;padding:0 24px;position:relative}
+    justify-content:center;position:relative;overflow:hidden}
   #btnMove.on{background:rgba(143,233,255,.1)}
-  #btnMove::before{content:'';position:absolute;left:50%;top:24px;bottom:24px;
-    width:1px;background:#2c343d}
 
-  .arw{width:0;height:0;border-style:solid}
-  .arw.l{border-width:14px 18px 14px 0;border-color:transparent #c6d2dc transparent transparent}
-  .arw.r{border-width:14px 0 14px 18px;border-color:transparent transparent transparent #c6d2dc}
-  .arw.l.on{border-right-color:#8fe9ff}
-  .arw.r.on{border-left-color:#8fe9ff}
+  /* deflection indicator — centred at rest, slides with the axis */
+  #nub{width:56px;height:56px;border-radius:28px;background:rgba(198,210,220,.14);
+    border:1px solid #55636f;will-change:transform;
+    transition:background .06s linear,border-color .06s linear}
+  #btnMove.on #nub{background:rgba(143,233,255,.32);border-color:#8fe9ff}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="screen"></canvas><div id="crt"></div></div>
 <div id="pad">
   <button id="btnFire" class="ctl" type="button" aria-label="Fire"></button>
-  <div id="btnMove" class="ctl" role="group" aria-label="Move left or right">
-    <span id="arwL" class="arw l"></span><span id="arwR" class="arw r"></span>
+  <div id="btnMove" class="ctl" role="group" aria-label="Slide to steer">
+    <span id="nub"></span>
   </div>
 </div>
 <p id="help"><b>&larr; &rarr;</b> / <b>A D</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>S</b> swap hands &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute &nbsp;·&nbsp; <b>C</b> scanlines</p>
@@ -80,8 +78,7 @@ const padEl   = document.getElementById('pad');
 const helpEl  = document.getElementById('help');
 const btnFire = document.getElementById('btnFire');
 const btnMove = document.getElementById('btnMove');
-const arwL    = document.getElementById('arwL');
-const arwR    = document.getElementById('arwR');
+const nubEl   = document.getElementById('nub');
 cv.width = W; cv.height = H;
 ctx.imageSmoothingEnabled = false;
 
@@ -328,8 +325,7 @@ addEventListener('keyup', e=>{ const k = CODES[e.code]; if(k){ e.preventDefault(
 addEventListener('blur', ()=>{
   for(const k in key)  key[k]  = false;
   for(const k in tkey) tkey[k] = false;
-  btnFire.classList.remove('on'); btnMove.classList.remove('on');
-  arwL.classList.remove('on');    arwR.classList.remove('on');
+  releaseTouch();
 });
 
 /* ---- swap hands: which thumb gets fire. Sticky across sessions. ---- */
@@ -346,36 +342,94 @@ function setSwap(v){
 }
 
 /* ---- on-screen buttons ----
-   Every finger currently down is re-hit-tested on each event, so fire and a
-   direction can be held together and a thumb can slide across the pill. */
-function syncTouch(e){
-  const f = btnFire.getBoundingClientRect();
-  const m = btnMove.getBoundingClientRect();
-  const mid = (m.left + m.right) / 2;
-  let L = false, R = false, F = false;
-  for(let i=0;i<e.touches.length;i++){
-    const t = e.touches[i], x = t.clientX, y = t.clientY;
-    if(x>=f.left && x<=f.right && y>=f.top && y<=f.bottom){ F = true; continue; }
-    if(x>=m.left && x<=m.right && y>=m.top && y<=m.bottom){
-      if(x < mid) L = true; else R = true;
-    }
-  }
-  tkey.L = L; tkey.R = R; tkey.F = F;
-  btnFire.classList.toggle('on', F);
-  btnMove.classList.toggle('on', L || R);
-  arwL.classList.toggle('on', L);
-  arwR.classList.toggle('on', R);
+   The pill is a RELATIVE axis, not a left/right split. Wherever the thumb
+   lands becomes zero, so resting a thumb on it does nothing; only movement
+   away from that point steers. Absolute position is irrelevant — land on the
+   far right of the pill, slide left, and the ship goes left.
+
+   At full deflection the origin is dragged along with the thumb, so travel is
+   never exhausted: you can keep pushing in one direction indefinitely, and a
+   move back the other way responds immediately.
+
+   Touches are tracked by identifier rather than re-hit-tested, so a thumb
+   that drifts off its button keeps working until it is actually lifted. */
+const MAXDEF = 42;   // px of deflection for full speed
+const DEADZ  = 5;    // px of slop, so a resting thumb cannot drift
+
+let fireIds = [];    // identifiers of touches that began on the fire button
+let moveId  = null;  // identifier of the touch steering the pill
+let moveOrigin = 0;  // its current zero point, in client px
+let touchAxis  = 0;  // -1 .. 1
+
+function inRect(x, y, r){ return x>=r.left && x<=r.right && y>=r.top && y<=r.bottom; }
+
+function paintPad(){
+  tkey.F = fireIds.length > 0;
+  btnFire.classList.toggle('on', tkey.F);
+  btnMove.classList.toggle('on', touchAxis !== 0);
+  nubEl.style.transform = 'translateX(' + (touchAxis * 46).toFixed(1) + 'px)';
 }
 
-['touchstart','touchmove','touchend','touchcancel'].forEach(ev=>{
-  padEl.addEventListener(ev, e=>{
-    e.preventDefault();
-    Snd.boot();
-    const wasFire = tkey.F;
-    syncTouch(e);
-    if(ev === 'touchstart' && tkey.F && !wasFire) startPress();
-  }, {passive:false});
-});
+function releaseTouch(){
+  fireIds.length = 0; moveId = null; touchAxis = 0; tkey.F = false;
+  paintPad();
+}
+
+function padStart(e){
+  const f = btnFire.getBoundingClientRect();
+  const m = btnMove.getBoundingClientRect();
+  for(let i=0;i<e.changedTouches.length;i++){
+    const t = e.changedTouches[i];
+    if(inRect(t.clientX, t.clientY, f)){
+      if(fireIds.indexOf(t.identifier) < 0) fireIds.push(t.identifier);
+    } else if(moveId === null && inRect(t.clientX, t.clientY, m)){
+      moveId = t.identifier; moveOrigin = t.clientX; touchAxis = 0;
+    }
+  }
+}
+
+function padMove(e){
+  if(moveId === null) return;
+  for(let i=0;i<e.changedTouches.length;i++){
+    const t = e.changedTouches[i];
+    if(t.identifier !== moveId) continue;
+    let d = t.clientX - moveOrigin;
+    if(d >  MAXDEF){ moveOrigin = t.clientX - MAXDEF; d =  MAXDEF; }
+    else if(d < -MAXDEF){ moveOrigin = t.clientX + MAXDEF; d = -MAXDEF; }
+    const mag = Math.abs(d);
+    touchAxis = mag <= DEADZ ? 0 : (d < 0 ? -1 : 1) * (mag - DEADZ) / (MAXDEF - DEADZ);
+  }
+}
+
+function padEnd(e){
+  for(let i=0;i<e.changedTouches.length;i++){
+    const t = e.changedTouches[i];
+    const j = fireIds.indexOf(t.identifier);
+    if(j >= 0) fireIds.splice(j, 1);
+    if(t.identifier === moveId){ moveId = null; touchAxis = 0; }
+  }
+}
+
+// Safety net: drop any tracked id that is no longer on the screen. Tracking by
+// identifier means a dropped touchend would otherwise strand the axis and steer
+// the ship forever; reconciling against the live list every event self-corrects.
+function reconcile(e){
+  const live = [];
+  for(let i=0;i<e.touches.length;i++) live.push(e.touches[i].identifier);
+  for(let i=fireIds.length-1;i>=0;i--) if(live.indexOf(fireIds[i]) < 0) fireIds.splice(i,1);
+  if(moveId !== null && live.indexOf(moveId) < 0){ moveId = null; touchAxis = 0; }
+}
+
+padEl.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  Snd.boot();
+  const wasFire = tkey.F;
+  padStart(e); reconcile(e); paintPad();
+  if(tkey.F && !wasFire) startPress();
+}, {passive:false});
+padEl.addEventListener('touchmove', e=>{ e.preventDefault(); padMove(e); reconcile(e); paintPad(); }, {passive:false});
+['touchend','touchcancel'].forEach(ev=>
+  padEl.addEventListener(ev, e=>{ e.preventDefault(); padEnd(e); reconcile(e); paintPad(); }, {passive:false}));
 
 /* ---- taps on the screen itself: start, or toggle the swap option ---- */
 const SWAP_BOX = {x0:36, y0:256, x1:220, y1:274};
@@ -692,8 +746,9 @@ function sendEveryoneHome(){
 function updatePlayer(dt){
   if(!player.alive) return;
   const sp = 108;
-  if(held('L')) player.x -= sp*dt;
-  if(held('R')) player.x += sp*dt;
+  // Keys are full deflection either way; the pill adds an analog axis.
+  const ax = (key.L ? -1 : 0) + (key.R ? 1 : 0) + touchAxis;
+  player.x += clamp(ax, -1, 1) * sp * dt;
   player.x = clamp(player.x, 9, W-9);
 
   if(held('F') && !pb && state===S_PLAY){

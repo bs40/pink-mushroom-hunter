@@ -49,7 +49,15 @@ tapered windshield, red side pods.
 | `M` | Mute |
 | `C` | Toggle CRT scanlines |
 
-Touch is supported: drag to move, hold to fire.
+On a phone an on-screen pad appears: a fire button, and a pill for steering.
+The pill is a *relative* axis — wherever your thumb lands becomes zero, and
+only movement from there steers. Resting a thumb on it does nothing, and
+absolute position never matters: land on the far right, slide left, and the
+ship goes left. Push to the end and the zero point follows, so you never run
+out of travel. Deflection is proportional, so small nudges give fine control.
+
+`S` swaps which side the fire button and pill sit on. Since a phone has no `S`
+key, the menu line is also tappable. The choice is sticky across sessions.
 
 Extra ship at 7,000 points, then every 30,000. High score persists in
 `localStorage`.
