@@ -100,23 +100,31 @@ a name collision fails cleanly and asks you to pick another.
   also retry with backoff, since a freshly created zone takes a moment to be
   accepted at the edge.
 
-## Splash screens
+## Splash screen
 
-`pmh_splash.png` is the source artwork: two posters side by side. `splash-portrait.webp`
-and `splash-landscape.webp` are the sliced panels (484x924 and 1041x817), picked at
-runtime by viewport orientation and alternated with the home screen every 10 seconds.
+`pmh_splash.png` is the source artwork — two posters side by side. Only the portrait
+one is used: the playfield is portrait on every device, so a landscape variant would
+not match the game it introduces. `splash-portrait.webp` is the sliced panel, shown
+alternating with the home screen every 10 seconds while sitting on the title.
 
-They ship as separate files rather than inlined base64. At 336KB the encoded payload
-would block first paint on a phone, and the game should be playable immediately; if a
-poster has not loaded, the splash phase is simply skipped. WebP at q90 rather than PNG
-because the same crops cost 2.8MB as PNG.
+The crop is 483x923 at (0,0). The panel's own right column and bottom row are a bright
+anti-aliased fringe against the white page background (mean luminance ~150 against ~40
+for real artwork), so they are trimmed — leaving them in put a white hairline down the
+edge of the poster.
+
+It ships as a separate file rather than inlined base64. ~116KB encoded into the HTML
+would block first paint on a phone, and the game should be playable immediately; until
+it loads, the splash phase is skipped and the home screen stays up. WebP at q90 rather
+than PNG because the same crop costs 963KB as PNG against 116KB as WebP.
+
+`object-fit` is `contain`, not `cover`: the poster is 1:1.91 and cover would crop it
+hard on anything squarer, taking the title with it.
 
 ## Layout
 
 ```
 pink-mushroom-hunter.html   the game
-pmh_splash.png              source artwork for both splash posters
-splash-portrait.webp        sliced phone poster
-splash-landscape.webp       sliced desktop poster
+pmh_splash.png              source artwork (both panels)
+splash-portrait.webp        the sliced splash poster
 deploy-bunny.ps1            bunny.net deployment
 ```

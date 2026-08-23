@@ -196,7 +196,7 @@ Upload -StorageZone $ZoneName -StoragePassword $sz.Password -StorageHost $shost 
 
 # Splash posters ride alongside rather than being inlined as base64 -- 336KB in
 # the HTML would block first paint. The game degrades gracefully without them.
-foreach ($img in @('splash-portrait.webp','splash-landscape.webp')) {
+foreach ($img in @('splash-portrait.webp')) {
   $ip = Join-Path $PSScriptRoot $img
   if (Test-Path $ip) {
     Upload -StorageZone $ZoneName -StoragePassword $sz.Password -StorageHost $shost `

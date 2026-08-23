@@ -369,22 +369,18 @@ function setSwap(v){
 }
 
 /* ---- attract splash ----
-   Two posters, chosen by viewport orientation, alternating with the home
-   screen every 10s. They are separate files rather than inlined base64:
-   336KB in the HTML would block first paint on a phone, and the game should
-   be playable immediately. If a poster has not loaded yet — or is missing
-   entirely — the splash phase is skipped and the home screen simply stays. */
-const SPLASH_SECS = 10;
-const SPLASH_SRC  = { p:'splash-portrait.webp', l:'splash-landscape.webp' };
-const splashOk = {};
-for(const k in SPLASH_SRC){
-  const im = new Image();
-  im.onload = () => { splashOk[SPLASH_SRC[k]] = true; };
-  im.src = SPLASH_SRC[k];
-}
-let splashOn = false, splashT = 0;
+   One portrait poster, alternating with the home screen every 10s. The
+   playfield is portrait on every device, so a landscape variant would not
+   match the game it introduces.
 
-function splashWanted(){ return innerWidth < innerHeight ? SPLASH_SRC.p : SPLASH_SRC.l; }
+   It is a separate file rather than inlined base64: ~116KB encoded into the
+   HTML would block first paint on a phone, and the game should be playable
+   immediately. Until it loads — or if it is missing entirely — the splash
+   phase is skipped and the home screen simply stays up. */
+const SPLASH_SECS = 10;
+const SPLASH_SRC  = 'splash-portrait.webp';
+let splashLoaded = false, splashOn = false, splashT = 0;
+(() => { const im = new Image(); im.onload = () => { splashLoaded = true; }; im.src = SPLASH_SRC; })();
 
 function paintSplashUi(){
   splashStart.textContent = touchMode ? 'TAP TO START' : 'PRESS ANY KEY';
@@ -392,11 +388,10 @@ function paintSplashUi(){
     ' · SWAP HANDS — FIRE ' + (swapHands ? 'RIGHT' : 'LEFT');
 }
 function showSplash(on){
-  const src = splashWanted();
-  if(on && !splashOk[src]) on = false;
+  if(on && !splashLoaded) on = false;
   splashOn = on;
   if(on){
-    if(splashImg.getAttribute('src') !== src) splashImg.setAttribute('src', src);
+    if(!splashImg.getAttribute('src')) splashImg.setAttribute('src', SPLASH_SRC);
     paintSplashUi();
   }
   splashEl.classList.toggle('on', on);
@@ -416,7 +411,6 @@ splashEl.addEventListener('touchstart', e=>{
 splashSwap.addEventListener('click', e=>{
   e.stopPropagation(); Snd.boot(); setSwap(!swapHands); paintSplashUi();
 });
-addEventListener('resize', ()=>{ if(splashOn) showSplash(true); });
 
 /* ---- on-screen buttons ----
    The pill is a RELATIVE axis, not a left/right split. Wherever the thumb
