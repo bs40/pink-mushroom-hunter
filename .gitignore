@@ -1,0 +1,12 @@
+# Credentials — never commit these.
+# deploy-bunny.ps1 reads .bunny-key at runtime; it must stay local.
+.bunny-key
+*.key
+*.pem
+.env
+.env.*
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
