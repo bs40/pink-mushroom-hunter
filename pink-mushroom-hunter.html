@@ -49,10 +49,33 @@
     border:1px solid #55636f;will-change:transform;
     transition:background .06s linear,border-color .06s linear}
   #btnMove.on #nub{background:rgba(143,233,255,.32);border-color:#8fe9ff}
+
+  /* ---------------- attract splash (alternates with the home screen) ------ */
+  #splash{position:fixed;inset:0;z-index:60;background:#080510;display:none;
+    align-items:center;justify-content:center;touch-action:none;cursor:pointer}
+  #splash.on{display:flex}
+  /* contain, not cover — showing the whole poster beats filling the edges */
+  #splashImg{width:100%;height:100%;object-fit:contain;
+    image-rendering:pixelated;image-rendering:crisp-edges}
+  #splashUi{position:absolute;left:0;right:0;bottom:4%;display:flex;
+    flex-direction:column;align-items:center;gap:12px;pointer-events:none}
+  #splashStart{font:600 15px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    letter-spacing:.22em;color:#fff8d4;text-shadow:0 2px 0 #000,0 0 14px rgba(255,95,162,.9)}
+  #splashSwap{pointer-events:auto;font:600 11px/1 ui-monospace,monospace;letter-spacing:.12em;
+    color:#8fe9ff;background:rgba(8,5,16,.75);border:1px solid #ff5fa2;border-radius:3px;
+    padding:8px 14px;cursor:pointer;-webkit-tap-highlight-color:transparent;
+    touch-action:manipulation}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="screen"></canvas><div id="crt"></div></div>
+<div id="splash">
+  <img id="splashImg" alt="Pink Mushroom Hunter">
+  <div id="splashUi">
+    <div id="splashStart">PRESS ANY KEY</div>
+    <button id="splashSwap" type="button">S · SWAP HANDS</button>
+  </div>
+</div>
 <div id="pad">
   <button id="btnFire" class="ctl" type="button" aria-label="Fire"></button>
   <div id="btnMove" class="ctl" role="group" aria-label="Slide to steer">
@@ -79,6 +102,10 @@ const helpEl  = document.getElementById('help');
 const btnFire = document.getElementById('btnFire');
 const btnMove = document.getElementById('btnMove');
 const nubEl   = document.getElementById('nub');
+const splashEl    = document.getElementById('splash');
+const splashImg   = document.getElementById('splashImg');
+const splashStart = document.getElementById('splashStart');
+const splashSwap  = document.getElementById('splashSwap');
 cv.width = W; cv.height = H;
 ctx.imageSmoothingEnabled = false;
 
@@ -341,6 +368,56 @@ function setSwap(v){
   if(state !== S_TITLE) flash(swapHands ? 'fire right' : 'fire left');
 }
 
+/* ---- attract splash ----
+   Two posters, chosen by viewport orientation, alternating with the home
+   screen every 10s. They are separate files rather than inlined base64:
+   336KB in the HTML would block first paint on a phone, and the game should
+   be playable immediately. If a poster has not loaded yet — or is missing
+   entirely — the splash phase is skipped and the home screen simply stays. */
+const SPLASH_SECS = 10;
+const SPLASH_SRC  = { p:'splash-portrait.webp', l:'splash-landscape.webp' };
+const splashOk = {};
+for(const k in SPLASH_SRC){
+  const im = new Image();
+  im.onload = () => { splashOk[SPLASH_SRC[k]] = true; };
+  im.src = SPLASH_SRC[k];
+}
+let splashOn = false, splashT = 0;
+
+function splashWanted(){ return innerWidth < innerHeight ? SPLASH_SRC.p : SPLASH_SRC.l; }
+
+function paintSplashUi(){
+  splashStart.textContent = touchMode ? 'TAP TO START' : 'PRESS ANY KEY';
+  splashSwap.textContent  = (touchMode ? 'TAP' : 'S') +
+    ' · SWAP HANDS — FIRE ' + (swapHands ? 'RIGHT' : 'LEFT');
+}
+function showSplash(on){
+  const src = splashWanted();
+  if(on && !splashOk[src]) on = false;
+  splashOn = on;
+  if(on){
+    if(splashImg.getAttribute('src') !== src) splashImg.setAttribute('src', src);
+    paintSplashUi();
+  }
+  splashEl.classList.toggle('on', on);
+}
+// Tap the poster to start; the swap control is carved out so the hand
+// preference stays reachable during the splash half of the cycle.
+splashEl.addEventListener('click', e=>{
+  if(e.target === splashSwap) return;
+  Snd.boot(); startPress();
+});
+splashEl.addEventListener('touchstart', e=>{
+  if(e.target === splashSwap) return;
+  e.preventDefault(); Snd.boot();
+  if(!touchMode) showPad(true);
+  startPress();
+}, {passive:false});
+splashSwap.addEventListener('click', e=>{
+  e.stopPropagation(); Snd.boot(); setSwap(!swapHands); paintSplashUi();
+});
+addEventListener('resize', ()=>{ if(splashOn) showSplash(true); });
+
 /* ---- on-screen buttons ----
    The pill is a RELATIVE axis, not a left/right split. Wherever the thumb
    lands becomes zero, so resting a thumb on it does nothing; only movement
@@ -540,7 +617,11 @@ function resetGame(){
   setState(S_READY);
 }
 
-function setState(s){ state = s; stateT = 0; }
+function setState(s){
+  state = s; stateT = 0;
+  if(s === S_TITLE) splashT = 0;          // always open on the home screen
+  showSplash(false);
+}
 
 /* ------------------------------------------------------- scoring */
 function addScore(n){
@@ -852,6 +933,8 @@ function update(dt){
 
   switch(state){
     case S_TITLE:
+      splashT += dt;
+      if(splashT >= SPLASH_SECS){ splashT = 0; showSplash(!splashOn); }
       break;
 
     case S_READY:

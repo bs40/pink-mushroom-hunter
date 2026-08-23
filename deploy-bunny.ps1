@@ -194,6 +194,18 @@ Info "endpoint $shost"
 Upload -StorageZone $ZoneName -StoragePassword $sz.Password -StorageHost $shost `
        -LocalFile $File -RemoteNames @('index.html', 'pink-mushroom-hunter.html')
 
+# Splash posters ride alongside rather than being inlined as base64 -- 336KB in
+# the HTML would block first paint. The game degrades gracefully without them.
+foreach ($img in @('splash-portrait.webp','splash-landscape.webp')) {
+  $ip = Join-Path $PSScriptRoot $img
+  if (Test-Path $ip) {
+    Upload -StorageZone $ZoneName -StoragePassword $sz.Password -StorageHost $shost `
+           -LocalFile $ip -RemoteNames @($img)
+  } else {
+    Info "skipped $img (not present locally)"
+  }
+}
+
 if ($Update) {
   Step "Purging CDN cache"
   $pz = AsList (Bunny GET "/pullzone?page=1&perPage=1000" $null $key) | Where-Object { $_.Name -eq $ZoneName }

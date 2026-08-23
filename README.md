@@ -100,9 +100,23 @@ a name collision fails cleanly and asks you to pick another.
   also retry with backoff, since a freshly created zone takes a moment to be
   accepted at the edge.
 
+## Splash screens
+
+`pmh_splash.png` is the source artwork: two posters side by side. `splash-portrait.webp`
+and `splash-landscape.webp` are the sliced panels (484x924 and 1041x817), picked at
+runtime by viewport orientation and alternated with the home screen every 10 seconds.
+
+They ship as separate files rather than inlined base64. At 336KB the encoded payload
+would block first paint on a phone, and the game should be playable immediately; if a
+poster has not loaded, the splash phase is simply skipped. WebP at q90 rather than PNG
+because the same crops cost 2.8MB as PNG.
+
 ## Layout
 
 ```
-pink-mushroom-hunter.html   the entire game
+pink-mushroom-hunter.html   the game
+pmh_splash.png              source artwork for both splash posters
+splash-portrait.webp        sliced phone poster
+splash-landscape.webp       sliced desktop poster
 deploy-bunny.ps1            bunny.net deployment
 ```
