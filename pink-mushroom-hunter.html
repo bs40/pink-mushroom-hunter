@@ -2,27 +2,66 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>Pink Mushroom Hunter</title>
 <style>
   html,body{margin:0;height:100%;background:#000;color:#8a8a8a;
     font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
-    overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+    overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+    /* no pinch-zoom, no double-tap zoom, no rubber-band scroll */
+    touch-action:none;overscroll-behavior:none}
   #wrap{position:relative;line-height:0}
   canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges;
-    background:#000;box-shadow:0 0 0 2px #1b1b1b,0 0 46px rgba(70,130,255,.16)}
+    background:#000;box-shadow:0 0 0 2px #1b1b1b,0 0 46px rgba(70,130,255,.16);
+    touch-action:none}
   #crt{position:absolute;inset:0;pointer-events:none;
     background:repeating-linear-gradient(0deg,rgba(0,0,0,.34) 0 1px,rgba(0,0,0,0) 1px 3px)}
   #crt.off{display:none}
   #help{margin:0;text-align:center;letter-spacing:.06em}
   #help b{color:#cfcfcf;font-weight:600}
   @media (max-height:620px){#help{display:none}}
+  body.touch #help{display:none}
+
+  /* ---------------- on-screen controls (touch only) ---------------- */
+  #pad{display:none;width:100%;max-width:480px;box-sizing:border-box;
+    padding:0 18px;align-items:center;justify-content:space-between;gap:16px;
+    touch-action:none}
+  #pad.on{display:flex}
+  #pad.swap{flex-direction:row-reverse}          /* move pill left, fire right */
+
+  .ctl{box-sizing:border-box;background:rgba(255,255,255,.045);
+    border:2px solid #3a4450;display:flex;align-items:center;justify-content:center;
+    touch-action:none;-webkit-tap-highlight-color:transparent;
+    transition:background .06s linear}
+
+  #btnFire{flex:0 0 auto;width:94px;height:94px;border-radius:50%;border-color:#ff5fa2}
+  #btnFire::after{content:'';width:36px;height:36px;border-radius:50%;
+    background:#ff5fa2;box-shadow:0 0 15px rgba(255,95,162,.55)}
+  #btnFire.on{background:rgba(255,95,162,.3)}
+
+  #btnMove{flex:1 1 auto;max-width:214px;height:94px;border-radius:47px;
+    justify-content:space-between;padding:0 24px;position:relative}
+  #btnMove.on{background:rgba(143,233,255,.1)}
+  #btnMove::before{content:'';position:absolute;left:50%;top:24px;bottom:24px;
+    width:1px;background:#2c343d}
+
+  .arw{width:0;height:0;border-style:solid}
+  .arw.l{border-width:14px 18px 14px 0;border-color:transparent #c6d2dc transparent transparent}
+  .arw.r{border-width:14px 0 14px 18px;border-color:transparent transparent transparent #c6d2dc}
+  .arw.l.on{border-right-color:#8fe9ff}
+  .arw.r.on{border-left-color:#8fe9ff}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="screen"></canvas><div id="crt"></div></div>
-<p id="help"><b>&larr; &rarr;</b> / <b>A D</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute &nbsp;·&nbsp; <b>C</b> scanlines</p>
+<div id="pad">
+  <button id="btnFire" class="ctl" type="button" aria-label="Fire"></button>
+  <div id="btnMove" class="ctl" role="group" aria-label="Move left or right">
+    <span id="arwL" class="arw l"></span><span id="arwR" class="arw r"></span>
+  </div>
+</div>
+<p id="help"><b>&larr; &rarr;</b> / <b>A D</b> move &nbsp;·&nbsp; <b>SPACE</b> fire &nbsp;·&nbsp; <b>S</b> swap hands &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> mute &nbsp;·&nbsp; <b>C</b> scanlines</p>
 <script>
 (function(){
 'use strict';
@@ -35,19 +74,39 @@
 
 const W = 256, H = 320, STEP = 1/60;
 
-const cv  = document.getElementById('screen');
-const ctx = cv.getContext('2d');
+const cv      = document.getElementById('screen');
+const ctx     = cv.getContext('2d');
+const padEl   = document.getElementById('pad');
+const helpEl  = document.getElementById('help');
+const btnFire = document.getElementById('btnFire');
+const btnMove = document.getElementById('btnMove');
+const arwL    = document.getElementById('arwL');
+const arwR    = document.getElementById('arwR');
 cv.width = W; cv.height = H;
 ctx.imageSmoothingEnabled = false;
 
+// Coarse pointer == finger. Also flipped on the first real touch, so a
+// touchscreen laptop that reports a fine pointer still gets the controls.
+let touchMode = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+
+function showPad(on){
+  touchMode = on;
+  padEl.classList.toggle('on', on);
+  document.body.classList.toggle('touch', on);
+  fit();
+}
+
 function fit(){
-  const pad = window.innerHeight < 620 ? 8 : 84;
-  const s = Math.max(1, Math.min((window.innerWidth-16)/W, (window.innerHeight-pad)/H));
-  const k = s >= 2 ? Math.floor(s) : s;          // integer scale when we can afford it
+  const padH  = padEl.classList.contains('on') ? padEl.offsetHeight + 16 : 0;
+  const helpH = getComputedStyle(helpEl).display !== 'none' ? helpEl.offsetHeight + 12 : 0;
+  const avail = window.innerHeight - padH - helpH - 18;
+  const s = Math.min((window.innerWidth - 14)/W, avail/H);
+  const k = s >= 2 ? Math.floor(s) : Math.max(0.5, s);  // integer scale when we can afford it
   cv.style.width  = (W*k)+'px';
   cv.style.height = (H*k)+'px';
 }
-addEventListener('resize', fit); fit();
+addEventListener('resize', fit);
+addEventListener('orientationchange', ()=> setTimeout(fit, 120));
 
 /* ---------------------------------------------------------- font */
 const FONT = {
@@ -244,9 +303,13 @@ const Snd = {
 };
 
 /* --------------------------------------------------------- input */
-const key = {};
-const CODES = {ArrowLeft:'L', KeyA:'L', ArrowRight:'R', KeyD:'R', Space:'F', KeyZ:'F', KeyJ:'F',
-               Enter:'S', KeyP:'P', KeyM:'M', KeyC:'C'};
+/* Keyboard and touch are tracked separately so neither can clear the other. */
+const key = {}, tkey = {};
+const held = k => !!(key[k] || tkey[k]);
+
+const CODES = {ArrowLeft:'L', KeyA:'L', ArrowRight:'R', KeyD:'R',
+               Space:'F', KeyZ:'F', KeyJ:'F', Enter:'START',
+               KeyP:'P', KeyM:'M', KeyC:'C', KeyS:'SWAP'};
 addEventListener('keydown', e=>{
   const k = CODES[e.code];
   if(!k) return;
@@ -255,23 +318,99 @@ addEventListener('keydown', e=>{
     if(k==='P' && (state===S_PLAY||paused)) paused = !paused;
     if(k==='M'){ Snd.muted = !Snd.muted; flash('sound '+(Snd.muted?'off':'on')); }
     if(k==='C') document.getElementById('crt').classList.toggle('off');
+    if(k==='SWAP') setSwap(!swapHands);
   }
   key[k] = true;
   Snd.boot();
-  if((k==='F'||k==='S')) startPress();
+  if(k==='F' || k==='START') startPress();
 }, {passive:false});
 addEventListener('keyup', e=>{ const k = CODES[e.code]; if(k){ e.preventDefault(); key[k]=false; } }, {passive:false});
-addEventListener('blur', ()=>{ for(const k in key) key[k]=false; });
+addEventListener('blur', ()=>{
+  for(const k in key)  key[k]  = false;
+  for(const k in tkey) tkey[k] = false;
+  btnFire.classList.remove('on'); btnMove.classList.remove('on');
+  arwL.classList.remove('on');    arwR.classList.remove('on');
+});
 
-let touchX = null;
-function tpos(e){
-  const r = cv.getBoundingClientRect();
-  const t = e.touches[0];
-  return (t.clientX - r.left) / r.width * W;
+/* ---- swap hands: which thumb gets fire. Sticky across sessions. ---- */
+let swapHands = false;
+try { swapHands = localStorage.getItem('pmhunter.swap') === '1'; } catch(e){}
+
+function setSwap(v){
+  swapHands = !!v;
+  padEl.classList.toggle('swap', swapHands);
+  try { localStorage.setItem('pmhunter.swap', swapHands ? '1' : '0'); } catch(e){}
+  Snd.life();
+  // On the title screen the option box already shows the state; elsewhere, say so.
+  if(state !== S_TITLE) flash(swapHands ? 'fire right' : 'fire left');
 }
-cv.addEventListener('touchstart', e=>{ e.preventDefault(); Snd.boot(); touchX = tpos(e); key.F = true; startPress(); }, {passive:false});
-cv.addEventListener('touchmove',  e=>{ e.preventDefault(); touchX = tpos(e); }, {passive:false});
-cv.addEventListener('touchend',   e=>{ e.preventDefault(); touchX = null; key.F = false; }, {passive:false});
+
+/* ---- on-screen buttons ----
+   Every finger currently down is re-hit-tested on each event, so fire and a
+   direction can be held together and a thumb can slide across the pill. */
+function syncTouch(e){
+  const f = btnFire.getBoundingClientRect();
+  const m = btnMove.getBoundingClientRect();
+  const mid = (m.left + m.right) / 2;
+  let L = false, R = false, F = false;
+  for(let i=0;i<e.touches.length;i++){
+    const t = e.touches[i], x = t.clientX, y = t.clientY;
+    if(x>=f.left && x<=f.right && y>=f.top && y<=f.bottom){ F = true; continue; }
+    if(x>=m.left && x<=m.right && y>=m.top && y<=m.bottom){
+      if(x < mid) L = true; else R = true;
+    }
+  }
+  tkey.L = L; tkey.R = R; tkey.F = F;
+  btnFire.classList.toggle('on', F);
+  btnMove.classList.toggle('on', L || R);
+  arwL.classList.toggle('on', L);
+  arwR.classList.toggle('on', R);
+}
+
+['touchstart','touchmove','touchend','touchcancel'].forEach(ev=>{
+  padEl.addEventListener(ev, e=>{
+    e.preventDefault();
+    Snd.boot();
+    const wasFire = tkey.F;
+    syncTouch(e);
+    if(ev === 'touchstart' && tkey.F && !wasFire) startPress();
+  }, {passive:false});
+});
+
+/* ---- taps on the screen itself: start, or toggle the swap option ---- */
+const SWAP_BOX = {x0:36, y0:256, x1:220, y1:274};
+
+function tapCanvas(clientX, clientY){
+  Snd.boot();
+  if(state === S_TITLE){
+    const r = cv.getBoundingClientRect();
+    const x = (clientX - r.left) / r.width  * W;
+    const y = (clientY - r.top)  / r.height * H;
+    if(x>=SWAP_BOX.x0 && x<=SWAP_BOX.x1 && y>=SWAP_BOX.y0 && y<=SWAP_BOX.y1){
+      setSwap(!swapHands);      // toggle instead of starting
+      return;
+    }
+  }
+  startPress();
+}
+cv.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  if(!touchMode) showPad(true);
+  const t = e.touches[0];
+  if(t) tapCanvas(t.clientX, t.clientY);
+}, {passive:false});
+cv.addEventListener('click', e=> tapCanvas(e.clientX, e.clientY));
+
+/* ---- kill pinch-zoom, double-tap zoom and rubber-banding ---- */
+['gesturestart','gesturechange','gestureend'].forEach(ev=>
+  document.addEventListener(ev, e=> e.preventDefault(), {passive:false}));
+document.addEventListener('touchstart', e=>{ if(e.touches.length > 1) e.preventDefault(); }, {passive:false});
+document.addEventListener('touchmove',  e=>{ if(e.touches.length > 1) e.preventDefault(); }, {passive:false});
+let lastTapT = -1e4;
+document.addEventListener('touchend', e=>{
+  if(e.timeStamp - lastTapT < 330) e.preventDefault();   // second tap of a double-tap
+  lastTapT = e.timeStamp;
+}, {passive:false});
 
 /* ---------------------------------------------------- game model */
 const CELL = 20, COLS = 10;
@@ -553,15 +692,11 @@ function sendEveryoneHome(){
 function updatePlayer(dt){
   if(!player.alive) return;
   const sp = 108;
-  if(touchX !== null){
-    const d = touchX - player.x;
-    player.x += clamp(d, -sp*dt*1.6, sp*dt*1.6);
-  }
-  if(key.L) player.x -= sp*dt;
-  if(key.R) player.x += sp*dt;
+  if(held('L')) player.x -= sp*dt;
+  if(held('R')) player.x += sp*dt;
   player.x = clamp(player.x, 9, W-9);
 
-  if(key.F && !pb && state===S_PLAY){
+  if(held('F') && !pb && state===S_PLAY){
     pb = {x: Math.round(player.x), y: PLAYER_Y - 8};
     Snd.shoot();
   }
@@ -780,10 +915,19 @@ function drawTitle(){
     drawText(r.b, 205, y, '#ffe082', 'center');
   }
 
-  if((t*1.6|0)%2 === 0) drawText('PRESS SPACE TO START', W/2, 224, '#ffffff', 'center');
-  drawText('ARROWS MOVE   SPACE FIRES', W/2, 246, '#8a8a8a', 'center');
-  drawText('ONE SHOT IN FLIGHT AT A TIME', W/2, 258, '#8a8a8a', 'center');
-  drawText('(c) 2026 PINK MUSHROOM SOFTWORKS', W/2, 282, '#4a4a4a', 'center');
+  if((t*1.6|0)%2 === 0)
+    drawText(touchMode ? 'TAP FIRE TO START' : 'PRESS SPACE TO START', W/2, 212, '#ffffff', 'center');
+  drawText('ONE SHOT IN FLIGHT AT A TIME', W/2, 232, '#8a8a8a', 'center');
+  if(!touchMode) drawText('ARROWS MOVE   SPACE FIRES', W/2, 244, '#8a8a8a', 'center');
+
+  // Swap-hands option: press S, or tap the box (the only route on a phone).
+  ctx.strokeStyle = swapHands ? '#8fe9ff' : '#3a4450';
+  ctx.strokeRect(SWAP_BOX.x0+0.5, SWAP_BOX.y0+0.5, SWAP_BOX.x1-SWAP_BOX.x0, SWAP_BOX.y1-SWAP_BOX.y0);
+  drawText(touchMode ? 'TAP' : 'S', SWAP_BOX.x0+7, SWAP_BOX.y0+6, '#ffd54f');
+  drawText('SWAP HANDS', SWAP_BOX.x0 + (touchMode ? 32 : 20), SWAP_BOX.y0+6, '#ffffff');
+  drawText(swapHands ? 'FIRE RIGHT' : 'FIRE LEFT', SWAP_BOX.x1-7, SWAP_BOX.y0+6, '#8fe9ff', 'right');
+
+  drawText('(c) 2026 PINK MUSHROOM SOFTWORKS', W/2, 288, '#4a4a4a', 'center');
 }
 
 function render(){
@@ -863,6 +1007,9 @@ function frame(ts){
   }
   render();
 }
+// Apply the sticky hand preference and reveal the pad before first paint.
+padEl.classList.toggle('swap', swapHands);
+showPad(touchMode);
 buildFormation();
 requestAnimationFrame(frame);
 
