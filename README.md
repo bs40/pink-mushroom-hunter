@@ -120,6 +120,41 @@ than PNG because the same crop costs 963KB as PNG against 116KB as WebP.
 `object-fit` is `contain`, not `cover`: the poster is 1:1.91 and cover would crop it
 hard on anything squarer, taking the title with it.
 
+## Boss waves
+
+Odd waves are a mushroom patch, even waves are a boss: 1 patch, 2 boss, 3 patch,
+4 boss, and so on.
+
+Wave 2's boss is a giant pink fly agaric at 8x scale (88x80, from the 11x10
+flagship sprite). It descends over 60 seconds to a low vibrating drone, and
+every 5 seconds it shakes hard from side to side and halts at a random
+horizontal position. 100 hits destroys it, in 1,000 multicoloured dots.
+
+Reaching the ship's row costs a life and sends it back to the top. Damage
+already dealt is kept, so a lost life sets you back on time rather than wiping
+your progress. Landing is fatal whether or not the boss is lined up with you —
+otherwise one that had shaken off to the side would sail past into nothing and
+the fight could never resolve.
+
+### Every fifth shot
+
+100 hits does not fit the one-shot-in-flight rule: a round trip is roughly
+0.55s, so 100 single hits would need about 55 seconds of flawless shooting
+against a 60-second descent, with a dozen shake-teleports stealing shots in
+flight. So every fifth shot is a wiggly missile worth 5 hits — 4x1 + 1x5 = 9
+damage per 5 shots, which brings a perfect run to ~37s and leaves real slack
+without touching the signature one-bullet rule.
+
+`BOSS_TYPES` is a registry keyed by type so later waves can host genuinely
+different bosses rather than only a bigger mushroom; `bossForWave()` picks the
+type and level. Today there is one type, scaling +40 HP and -8s of descent per
+level.
+
+### Testing
+
+`?w=N` drops straight into wave N, skipping title and splash — `?w=2` for the
+boss, `?w=4` for the level-2 version.
+
 ## Layout
 
 ```

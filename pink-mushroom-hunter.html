@@ -266,6 +266,11 @@ function bake(rows, pal, flap){
 const SPR = {};
 for(const k in PIX) SPR[k] = [bake(PIX[k], PAL[k], false), bake(PIX[k], PAL[k], true)];
 
+// All-white variants, drawn for a frame when a boss takes a hit.
+const WHITE_PAL = {'1':'#ffffff','2':'#ffffff','3':'#ffffff','4':'#ffffff'};
+const SPR_WHITE = {};
+for(const k in PIX) SPR_WHITE[k] = bake(PIX[k], WHITE_PAL, false);
+
 function drawSpr(img, x, y, rot){
   const hw = img.width/2, hh = img.height/2;
   if(!rot){ ctx.drawImage(img, Math.round(x-hw), Math.round(y-hh)); return; }
@@ -318,12 +323,53 @@ const Snd = {
     s.start(t0); s.stop(t0+dur+0.02);
   },
   shoot(){ this.tone('square', 1150, 180, 0.11, 0.05); },
+  missile(){ this.tone('square', 380, 1250, 0.26, 0.05); this.tone('sawtooth', 190, 620, 0.26, 0.03); },
   pop(){   this.hiss(0.24, 1900, 190, 0.20); this.tone('triangle', 340, 70, 0.2, 0.05); },
   swoop(){ this.tone('sawtooth', 240, 760, 0.16, 0.028); this.tone('sawtooth', 760, 200, 0.26, 0.028, 0.16); },
   boom(){  this.hiss(0.85, 1300, 60, 0.30); this.tone('sawtooth', 200, 32, 0.8, 0.10); },
   bonus(){ [523,659,784,1046,1318].forEach((f,i)=> this.tone('square', f, f, 0.11, 0.06, i*0.075)); },
   life(){  [784,1046,1318].forEach((f,i)=> this.tone('square', f, f, 0.1, 0.06, i*0.06)); },
-  wave(){  [392,523,659].forEach((f,i)=> this.tone('square', f, f, 0.13, 0.05, i*0.11)); }
+  wave(){  [392,523,659].forEach((f,i)=> this.tone('square', f, f, 0.13, 0.05, i*0.11)); },
+
+  /* Sustained boss drone: two detuned sub-bass oscillators through a lowpass,
+     with an LFO on the pitch for the vibrating quality. Idempotent, so the
+     boss can call hum(true) every frame without stacking voices. */
+  humNodes:null,
+  hum(on){
+    if(!this.ac) return;                       // not booted yet; caller retries
+    if(on && this.muted) on = false;
+    if(on){
+      if(this.humNodes) return;
+      const t = this.ac.currentTime;
+      const g = this.ac.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.11, t + 1.4);
+      const lp = this.ac.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 190; lp.Q.value = 3;
+      const o1 = this.ac.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 41;
+      const o2 = this.ac.createOscillator(); o2.type = 'sine';     o2.frequency.value = 27.5;
+      const lfo = this.ac.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 5.6;
+      const lg  = this.ac.createGain(); lg.gain.value = 3.4;
+      lfo.connect(lg); lg.connect(o1.frequency);
+      o1.connect(lp); o2.connect(lp); lp.connect(g); g.connect(this.ac.destination);
+      o1.start(t); o2.start(t); lfo.start(t);
+      this.humNodes = {o1,o2,lfo,g};
+    } else if(this.humNodes){
+      const {o1,o2,lfo,g} = this.humNodes, t = this.ac.currentTime;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      o1.stop(t+0.35); o2.stop(t+0.35); lfo.stop(t+0.35);
+      this.humNodes = null;
+    }
+  },
+  rumble(){ this.hiss(0.5, 260, 60, 0.14); this.tone('sawtooth', 90, 55, 0.5, 0.05); },
+  bossHit(){ this.tone('square', 300, 140, 0.06, 0.035); },
+  bossDie(){
+    this.hiss(1.6, 2600, 40, 0.34);
+    this.tone('sawtooth', 180, 22, 1.5, 0.12);
+    [523,659,784,1046].forEach((f,i)=> this.tone('square', f, f*2, 0.5, 0.05, 0.5 + i*0.09));
+  }
 };
 
 /* --------------------------------------------------------- input */
@@ -339,8 +385,8 @@ addEventListener('keydown', e=>{
   if(!k) return;
   e.preventDefault();
   if(!key[k]){
-    if(k==='P' && (state===S_PLAY||paused)) paused = !paused;
-    if(k==='M'){ Snd.muted = !Snd.muted; flash('sound '+(Snd.muted?'off':'on')); }
+    if(k==='P' && (state===S_PLAY||paused)){ paused = !paused; if(paused) Snd.hum(false); }
+    if(k==='M'){ Snd.muted = !Snd.muted; if(Snd.muted) Snd.hum(false); flash('sound '+(Snd.muted?'off':'on')); }
     if(k==='C') document.getElementById('crt').classList.toggle('off');
     if(k==='SWAP') setSwap(!swapHands);
   }
@@ -566,6 +612,11 @@ let aliens = [], aliveCount = 0, formOff = 0, formT = 0;
 let pb = null, ebullets = [], parts = [], bursts = [], floaters = [];
 let player = {x: W/2, alive:true, blinkT:0, respawnT:0};
 let diveTimer = 1.5, gameT = 0, flashMsg = '', flashT = 0;
+let boss = null, shotCount = 0;
+const MISSILE_AMP = 5;   // px of wiggle — small enough to still hit a 9px cap
+// ?w=2 drops straight into that wave, skipping title and splash. Even = boss.
+const startWave = Math.max(1, Math.min(99,
+  parseInt(new URLSearchParams(location.search).get('w'), 10) || 1));
 
 try { hiscore = parseInt(localStorage.getItem('pmhunter.hi')||'0',10) || 0; } catch(e){}
 
@@ -602,18 +653,27 @@ function buildFormation(){
   aliveCount = aliens.length;
 }
 
-function resetGame(){
-  score = 0; lives = 3; wave = 1; nextExtra = EXTRA_AT;
+// Odd waves are a mushroom patch, even waves are a boss.
+function buildWave(){
+  boss = null;
+  Snd.hum(false);
+  if(isBossWave(wave)){ aliens = []; aliveCount = 0; spawnBoss(wave); }
+  else buildFormation();
+}
+
+function resetGame(w){
+  score = 0; lives = 3; wave = w || 1; nextExtra = EXTRA_AT;
   ebullets.length = 0; parts.length = 0; bursts.length = 0; floaters.length = 0;
-  pb = null;
-  buildFormation();
+  pb = null; shotCount = 0;
+  buildWave();
   player.x = W/2; player.alive = true;
   setState(S_READY);
 }
 
 function setState(s){
   state = s; stateT = 0;
-  if(s === S_TITLE) splashT = 0;          // always open on the home screen
+  if(s === S_TITLE){ splashT = 0; boss = null; }   // always open on the home screen
+  if(s === S_TITLE || s === S_OVER) Snd.hum(false);
   showSplash(false);
 }
 
@@ -725,6 +785,137 @@ function tryFire(a, dt){
   ebullets.push({x:a.x, y:a.y+4, vx:Math.cos(ang)*sp*0.55, vy:Math.max(60, Math.sin(ang)*sp)});
 }
 
+/* ------------------------------------------------------------ boss
+   A registry keyed by type, so later waves can host genuinely different
+   bosses rather than only a bigger mushroom. bossForWave() decides which
+   type and level shows up; today there is one type.
+
+   Even waves are boss waves: 1 patch, 2 boss, 3 patch, 4 boss ...        */
+const BOSS_TYPES = {
+  giant: {
+    build(level){
+      const src = SPR.flag[0], scale = 8;
+      return {
+        type:'giant', level, sprite:'flag', scale,
+        w: src.width*scale, h: src.height*scale,     // 11x10 -> 88x80
+        hpMax:       100 + (level-1)*40,
+        descendSecs: Math.max(32, 60 - (level-1)*8),
+        shakeEvery:  5,
+        shakeDur:    0.85,
+        shakeAmp:    12
+      };
+    }
+  }
+};
+function bossForWave(w){ return { type:'giant', level: Math.max(1, (w/2)|0) }; }
+function isBossWave(w){ return w % 2 === 0; }
+
+function spawnBoss(w){
+  const pick = bossForWave(w);
+  const b = BOSS_TYPES[pick.type].build(pick.level);
+  b.x = W/2;
+  b.y = -b.h/2;
+  b.hp = b.hpMax;
+  b.flash = 0;
+  b.shaking = false; b.sT = 0; b.fromX = b.x; b.toX = b.x;
+  b.shakeT = b.shakeEvery;
+  // Descend so its underside meets the ship's row exactly at descendSecs.
+  b.crashY = PLAYER_Y - 4 - b.h/2;
+  b.vy = (b.crashY - b.y) / b.descendSecs;
+  boss = b;
+  Snd.rumble();
+}
+
+// Landing costs a ship and sends the boss back to the top. Accumulated damage
+// is kept, so a lost life sets you back on time rather than wiping progress.
+function bossCrash(){
+  boss.y = -boss.h/2;
+  boss.x = W/2;
+  boss.shaking = false;
+  boss.shakeT = boss.shakeEvery;
+  killPlayer();
+}
+
+// Two boxes rather than one: the cap is full width, the stalk is much
+// narrower, so a single bounding box would eat shots either side of the stem.
+function bossBoxes(){
+  const b = boss, hw = b.w/2, hh = b.h/2, capH = b.h*0.60;
+  return [
+    { l:b.x-hw+2,        r:b.x+hw-2,        t:b.y-hh,        b:b.y-hh+capH },
+    { l:b.x-b.w*0.32,    r:b.x+b.w*0.32,    t:b.y-hh+capH,   b:b.y+hh      }
+  ];
+}
+
+function updateBoss(dt){
+  if(!boss) return;
+  Snd.hum(true);                       // idempotent; catches up once audio boots
+  if(boss.flash > 0) boss.flash -= dt;
+
+  boss.y += boss.vy * dt;
+
+  // Reaching the ship's row is fatal whether or not it is lined up with you --
+  // otherwise a boss that shook off to one side would sail past into nothing
+  // and the fight could never resolve.
+  if(boss.y >= boss.crashY){ bossCrash(); return; }
+
+  if(boss.shaking){
+    boss.sT += dt;
+    const k = Math.min(1, boss.sT/boss.shakeDur);
+    const ease = k < 0.5 ? 2*k*k : 1 - Math.pow(-2*k+2, 2)/2;
+    // vibrates hard, then settles as it arrives
+    boss.x = boss.fromX + (boss.toX-boss.fromX)*ease
+           + Math.sin(boss.sT*46) * boss.shakeAmp * (1-k);
+    if(k >= 1){ boss.x = boss.toX; boss.shaking = false;
+      // count the shake itself against the interval, so shakes start
+      // exactly shakeEvery apart rather than drifting later each time
+      boss.shakeT = Math.max(0.1, boss.shakeEvery - boss.shakeDur); }
+  } else {
+    boss.shakeT -= dt;
+    if(boss.shakeT <= 0){
+      const half = boss.w/2 + 3;
+      boss.shaking = true; boss.sT = 0;
+      boss.fromX = boss.x;
+      boss.toX = rnd(half, W-half);
+      Snd.rumble();
+    }
+  }
+}
+
+function damageBoss(n){
+  boss.hp -= n;
+  boss.flash = 0.07;
+  addScore(10*n);
+  Snd.bossHit();
+  if(boss.hp <= 0) killBoss();
+}
+
+function killBoss(){
+  const b = boss;
+  boss = null;
+  Snd.hum(false);
+  Snd.bossDie();
+  bossBurst(b.x, b.y);
+  addScore(5000);
+  floaters.push({x:b.x, y:b.y, t:0, txt:'5000', c:'#ffd54f'});
+}
+
+// 1,000 dots, every hue, straight out in all directions.
+function bossBurst(x, y){
+  bursts.push({x, y, t:0, dur:1.0, big:true});
+  for(let i=0;i<1000;i++){
+    const a = Math.random()*Math.PI*2, sp = 18 + Math.random()*185;
+    parts.push({ x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, t:0, g:8,
+                 dur: 0.9 + Math.random()*1.7,
+                 c: 'hsl(' + ((Math.random()*360)|0) + ',100%,' + ((56 + Math.random()*32)|0) + '%)' });
+  }
+}
+
+function drawBoss(){
+  if(!boss) return;
+  const img = boss.flash > 0 ? SPR_WHITE[boss.sprite] : SPR[boss.sprite][(gameT*3|0)%2];
+  ctx.drawImage(img, Math.round(boss.x-boss.w/2), Math.round(boss.y-boss.h/2), boss.w, boss.h);
+}
+
 /* ----------------------------------------------------- alien kill */
 function killAlien(a){
   a.alive = false; aliveCount--;
@@ -827,14 +1018,22 @@ function updatePlayer(dt){
   player.x = clamp(player.x, 9, W-9);
 
   if(held('F') && !pb && state===S_PLAY){
-    pb = {x: Math.round(player.x), y: PLAYER_Y - 8};
-    Snd.shoot();
+    // Every fifth shot is a wiggly missile worth 5 hits. Against a boss that
+    // turns 5 shots into 9 damage, which is what makes 100 hits reachable
+    // inside the descent without breaking the one-shot-in-flight rule.
+    shotCount++;
+    const wig = (shotCount % 5) === 0;
+    const x = Math.round(player.x);
+    pb = { x, x0:x, y: PLAYER_Y - 8, t:0, wig, dmg: wig ? 5 : 1 };
+    if(wig) Snd.missile(); else Snd.shoot();
   }
 }
 
 function updateBullets(dt){
   if(pb){
-    pb.y -= 330*dt;
+    pb.t += dt;
+    pb.y -= (pb.wig ? 296 : 330)*dt;
+    if(pb.wig) pb.x = Math.round(pb.x0 + Math.sin(pb.t*17)*MISSILE_AMP);
     if(pb.y < 18) pb = null;
   }
   for(let i=ebullets.length-1;i>=0;i--){
@@ -850,6 +1049,13 @@ function hitBox(a){
 }
 
 function collide(){
+  if(pb && boss){
+    for(const r of bossBoxes()){
+      if(pb.x >= r.l && pb.x <= r.r && pb.y <= r.b && pb.y+5 >= r.t){
+        damageBoss(pb.dmg); pb = null; break;
+      }
+    }
+  }
   if(pb){
     for(const a of aliens){
       if(!a.alive) continue;
@@ -871,6 +1077,13 @@ function collide(){
     const b = hitBox(a);
     if(b.r >= pl && b.l <= pr && b.b >= pt && b.t <= pbot){ killAlien(a); killPlayer(); return; }
   }
+  // The boss crashes into you. Damage already dealt is kept, so a lost ship
+  // sets you back on time rather than wiping out all the chipping away.
+  if(boss){
+    for(const r of bossBoxes()){
+      if(r.r >= pl && r.l <= pr && r.b >= pt && r.t <= pbot){ bossCrash(); return; }
+    }
+  }
 }
 
 function killPlayer(){
@@ -889,7 +1102,7 @@ function updateFx(dt){
     const p = parts[i];
     p.t += dt;
     if(p.t >= p.dur){ parts.splice(i,1); continue; }
-    p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 32*dt; p.vx *= 0.985;
+    p.x += p.vx*dt; p.y += p.vy*dt; p.vy += (p.g === undefined ? 32 : p.g)*dt; p.vx *= 0.985;
   }
   for(let i=bursts.length-1;i>=0;i--){ bursts[i].t += dt; if(bursts[i].t >= bursts[i].dur) bursts.splice(i,1); }
   for(let i=floaters.length-1;i>=0;i--){ const f=floaters[i]; f.t+=dt; f.y-=10*dt; if(f.t>1.1) floaters.splice(i,1); }
@@ -939,6 +1152,7 @@ function update(dt){
 
     case S_PLAY: {
       updateAliens(dt);
+      updateBoss(dt);
       updatePlayer(dt);
       updateBullets(dt);
       collide();
@@ -951,7 +1165,7 @@ function update(dt){
         const base = Math.max(0.34, 1.55 - (wave-1)*0.11);
         diveTimer = base * (0.42 + 0.58*aliveCount/TOTAL) * rnd(0.7,1.3);
       }
-      if(aliveCount === 0){ Snd.wave(); setState(S_CLEAR); }
+      if(!boss && aliveCount === 0){ Snd.wave(); setState(S_CLEAR); }
       break;
     }
 
@@ -968,7 +1182,7 @@ function update(dt){
       updateAliens(dt);
       updatePlayer(dt);
       updateBullets(dt);
-      if(stateT > 2.0){ wave++; buildFormation(); setState(S_READY); }
+      if(stateT > 2.0){ wave++; buildWave(); setState(S_READY); }
       break;
 
     case S_OVER:
@@ -1011,6 +1225,18 @@ function drawHud(){
   drawText(String(hiscore).padStart(6,'0'), W/2+22, 13, '#ffffff', 'center');
 
   for(let i=0;i<Math.min(lives,6);i++) drawShip(14 + i*15, 308, false);
+
+  if(boss){
+    const x0 = 24, bw = W - 48, y = 26;
+    const f  = Math.max(0, boss.hp / boss.hpMax);
+    ctx.fillStyle = '#2a0d1c'; ctx.fillRect(x0-1, y-1, bw+2, 7);
+    ctx.fillStyle = '#ff5fa2'; ctx.fillRect(x0, y, Math.round(bw*f), 5);
+    ctx.fillStyle = '#ffd9ea'; ctx.fillRect(x0, y, Math.round(bw*f), 1);
+    ctx.fillStyle = '#8a3560';
+    ctx.fillRect(x0-2, y-2, bw+4, 1); ctx.fillRect(x0-2, y+6, bw+4, 1);
+    ctx.fillRect(x0-2, y-2, 1, 9);    ctx.fillRect(x0+bw+1, y-2, 1, 9);
+    drawText(Math.max(0, boss.hp|0) + ' HITS LEFT', W/2, 36, '#8a8a8a', 'center');
+  }
 
   // one little pink cap per patch survived
   const shown = Math.min(wave, 8);
@@ -1076,8 +1302,22 @@ function render(){
       if(!a.alive) continue;
       drawSpr(a.img[a.state==='form' ? frame : 0], a.x, a.y, a.rot);
     }
+    drawBoss();
 
-    if(pb){ ctx.fillStyle = '#ffffff'; ctx.fillRect(pb.x, Math.round(pb.y), 1, 5); }
+    if(pb){
+      if(pb.wig){
+        // trailing segments sampled back along the sine path — a snake
+        for(let i=0;i<6;i++){
+          const tt = pb.t - i*0.028;
+          if(tt < 0) continue;
+          ctx.fillStyle = i === 0 ? '#ffffff' : (i%2 ? '#ff5fa2' : '#ffd54f');
+          ctx.fillRect(Math.round(pb.x0 + Math.sin(tt*17)*MISSILE_AMP),
+                       Math.round(pb.y + i*3), 2, 2);
+        }
+      } else {
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(pb.x, Math.round(pb.y), 1, 5);
+      }
+    }
 
     ctx.fillStyle = '#00e5ff';
     for(const b of ebullets) ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 4);
@@ -1100,11 +1340,14 @@ function render(){
     if(state === S_READY){
       if(lives === 3 && wave === 1 && stateT < 1.1) drawText('PLAYER ONE', W/2, 176, '#41c7f5', 'center');
       else drawText('WAVE '+wave, W/2, 176, '#41c7f5', 'center');
-      if(stateT > 0.9) drawText('READY', W/2, 196, '#ffd54f', 'center');
+      if(stateT > 0.9){
+        if(isBossWave(wave)) drawText('BOSS', W/2, 192, '#ff5fa2', 'center', 2);
+        else drawText('READY', W/2, 196, '#ffd54f', 'center');
+      }
     }
     if(state === S_DEAD && stateT > 0.7) drawText('SHIP LOST', W/2, 186, '#ef5350', 'center');
     if(state === S_CLEAR && stateT > 0.4){
-      drawText('PATCH CLEARED', W/2, 176, '#ff5fa2', 'center');
+      drawText(isBossWave(wave) ? 'BOSS DOWN' : 'PATCH CLEARED', W/2, 176, '#ff5fa2', 'center');
       drawText('WAVE '+(wave+1)+' INBOUND', W/2, 194, '#ffffff', 'center');
     }
     if(state === S_OVER) drawText('GAME OVER', W/2, 186, '#ef5350', 'center', 2);
@@ -1143,6 +1386,7 @@ function frame(ts){
 padEl.classList.toggle('swap', swapHands);
 showPad(touchMode);
 buildFormation();
+if(startWave > 1) resetGame(startWave);   // ?w=N drops straight into that wave
 requestAnimationFrame(frame);
 
 })();
